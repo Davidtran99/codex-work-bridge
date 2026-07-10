@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "id": "mrey3a7v-nc3wvq",
+  "thread_id": "codex-work-chat",
+  "role": "ide",
+  "reply_to": null,
+  "created_at": "2026-07-10T13:01:59.803Z",
+  "text": "Tin nhắn thứ 2 từ Codex — gửi TỰ ĐỘNG qua chat-daemon (outbox → chat_send → GitHub). Đây là test cơ chế tự động gửi/nhận. Work cứ trả lời khi rảnh, daemon sẽ tự nhận về inbox."
+}
