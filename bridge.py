@@ -101,12 +101,19 @@ def cmd_new(args) -> int:
 
 def validate_handoff(path: Path) -> list[str]:
     errors: list[str] = []
-    required = ("handoff.json", "REQUEST.md", "RESPONSE.md", "files")
+    # "files/" is optional: git does not track empty directories, so a handoff
+    # created without attachments (files == []) legitimately arrives with no
+    # files/ dir after a clone. Only the manifest + the two Markdown docs are
+    # structurally required.
+    required = ("handoff.json", "REQUEST.md", "RESPONSE.md")
     for name in required:
         if not (path / name).exists():
             errors.append(f"{path.relative_to(ROOT)}: missing {name}")
     if errors or not (path / "handoff.json").exists():
         return errors
+    files_dir = path / "files"
+    if files_dir.exists() and not files_dir.is_dir():
+        errors.append(f"{path.relative_to(ROOT)}: files must be a directory")
     try:
         data = read_manifest(path)
     except (json.JSONDecodeError, OSError) as exc:
@@ -119,6 +126,9 @@ def validate_handoff(path: Path) -> list[str]:
         errors.append(f"{path.relative_to(ROOT)}: id must match directory name")
     if not data.get("title"):
         errors.append(f"{path.relative_to(ROOT)}: title is required")
+    # If the manifest lists attachments, files/ must actually exist.
+    if data.get("files") and not files_dir.is_dir():
+        errors.append(f"{path.relative_to(ROOT)}: manifest lists files but files/ is missing")
     return errors
 
 
