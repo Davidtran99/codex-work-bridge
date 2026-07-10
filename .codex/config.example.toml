@@ -1,0 +1,15 @@
+# Copy this table into ~/.codex/config.toml or a trusted project's .codex/config.toml.
+# Replace both absolute paths before use.
+
+[mcp_servers.codex-work-bridge]
+command = "/absolute/path/to/node"
+args = ["/absolute/path/to/codex-work-bridge/mcp-server/src/index.js"]
+startup_timeout_sec = 15
+tool_timeout_sec = 60
+enabled = true
+required = false
+default_tools_approval_mode = "writes"
+
+[mcp_servers.codex-work-bridge.env]
+CODEX_WORK_BRIDGE_ROOT = "/absolute/path/to/codex-work-bridge"
+

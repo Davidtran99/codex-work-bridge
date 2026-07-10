@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "directions": ["ide-to-work", "work-to-ide"],
+  "statuses": ["open", "in_progress", "blocked", "ready_for_review", "completed"],
+  "max_package_mb": 100
+}
+

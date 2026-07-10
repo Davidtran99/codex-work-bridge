@@ -1,0 +1,7 @@
+.DS_Store
+__pycache__/
+*.pyc
+.env
+.bridge/packages/*.zip
+node_modules/
+npm-debug.log*

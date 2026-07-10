@@ -1,0 +1,20 @@
+{
+  "name": "codex-work-bridge-mcp",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Local MCP server for structured Codex IDE and ChatGPT Work handoffs",
+  "main": "mcp-server/src/index.js",
+  "scripts": {
+    "mcp:start": "node mcp-server/src/index.js",
+    "mcp:smoke": "node mcp-server/test/smoke.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "zod": "4.4.3"
+  }
+}
+
