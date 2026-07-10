@@ -95,3 +95,10 @@ bridge/work-to-ide/<slug>
 ```
 
 Hai phía trao đổi qua commit/PR. `handoff.json` là trạng thái máy đọc được; `REQUEST.md` và `RESPONSE.md` là nội dung để con người và agent cùng đọc.
+
+MCP server có hai tool git cấp workflow để Codex IDE thao tác an toàn:
+
+- `publish_handoff` — validate rồi commit CHỈ thư mục của một handoff lên branch `bridge/<direction>/<id>` và push. Không đụng `main`, không force-push, quét secret trước khi commit, trả về branch + commit SHA + danh sách file.
+- `sync_handoffs` — fetch/prune và **chỉ fast-forward**; từ chối nếu worktree bẩn hoặc branch đã lệch (không merge/reset/force).
+
+Hai tool này chỉ giúp thao tác nhanh và an toàn hơn; chúng **không tạo realtime**. Vẫn cần một cơ chế (ví dụ Work Automation) định kỳ kiểm tra GitHub và trường `processed_by`/`processed_at` để chống xử lý trùng.

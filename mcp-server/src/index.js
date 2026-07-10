@@ -65,6 +65,58 @@ async function findHandoff(id) {
   throw new Error(`Handoff not found: ${id}`);
 }
 
+async function runGit(args) {
+  return await new Promise((resolvePromise, reject) => {
+    const child = spawn("git", args, {
+      cwd: ROOT,
+      env: process.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      resolvePromise({ code, stdout: stdout.trim(), stderr: stderr.trim() });
+    });
+  });
+}
+
+async function git(args) {
+  const r = await runGit(args);
+  if (r.code !== 0) throw new Error(`git ${args.join(" ")} failed: ${r.stderr || r.stdout || `exit ${r.code}`}`);
+  return r.stdout;
+}
+
+async function assertGitRepo() {
+  const r = await runGit(["rev-parse", "--is-inside-work-tree"]);
+  if (r.code !== 0 || r.stdout !== "true") throw new Error("Bridge root is not a git working tree");
+}
+
+async function currentBranch() {
+  return await git(["rev-parse", "--abbrev-ref", "HEAD"]);
+}
+
+async function isWorktreeDirty() {
+  const out = await git(["status", "--porcelain"]);
+  return out.length > 0;
+}
+
+// Entries ALREADY STAGED in the index that fall OUTSIDE exchange/<dir>/<id>/.
+// Only staged paths matter for publish safety: a scoped `git add` never touches
+// untracked/unstaged files elsewhere, but anything pre-staged would be swept
+// into the commit, so we refuse when that happens.
+async function stagedOutsideScope(scopeRel) {
+  const out = await git(["diff", "--cached", "--name-only"]);
+  if (!out) return [];
+  const prefix = scopeRel.endsWith("/") ? scopeRel : `${scopeRel}/`;
+  return out.split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((path) => path !== scopeRel && !path.startsWith(prefix));
+}
+
 function hasLikelySecret(content) {
   const patterns = [
     /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/i,
@@ -303,6 +355,152 @@ server.registerTool(
       const packagePath = assertInsideRoot(join(ROOT, output));
       const info = await stat(packagePath);
       return text({ id, package: relative(ROOT, packagePath), bytes: info.size });
+    } catch (error) {
+      return text(String(error.message || error), true);
+    }
+  },
+);
+
+server.registerTool(
+  "sync_handoffs",
+  {
+    title: "Sync handoffs (safe pull)",
+    description:
+      "Fetch + prune the current branch and fast-forward ONLY. Refuses if the worktree is dirty or the branch has diverged. Never merges, resets, or force-updates. Read-mostly: only advances the branch pointer when a clean fast-forward is possible.",
+    annotations: { readOnlyHint: false, destructiveHint: false },
+    inputSchema: {},
+  },
+  async () => {
+    try {
+      await assertGitRepo();
+      if (await isWorktreeDirty()) {
+        return text("Refusing to sync: the worktree has uncommitted changes. Commit or stash them first.", true);
+      }
+      const branch = await currentBranch();
+      if (branch === "HEAD") return text("Refusing to sync: detached HEAD. Checkout a branch first.", true);
+
+      const upstreamProbe = await runGit(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]);
+      if (upstreamProbe.code !== 0) {
+        return text(`Refusing to sync: branch '${branch}' has no upstream tracking branch.`, true);
+      }
+      const upstream = upstreamProbe.stdout;
+
+      await git(["fetch", "--prune", "origin"]);
+
+      const local = await git(["rev-parse", "HEAD"]);
+      const remote = await git(["rev-parse", upstream]);
+      if (local === remote) {
+        return text({ branch, upstream, result: "already-up-to-date", head: local });
+      }
+      const base = await git(["merge-base", "HEAD", upstream]);
+      if (base !== local) {
+        // Local has commits not on upstream => diverged or ahead. Do not touch.
+        const ahead = base === remote ? "ahead" : "diverged";
+        return text(`Refusing to sync: branch '${branch}' is ${ahead} of '${upstream}'. Fast-forward not possible; resolve manually.`, true);
+      }
+      // base === local && local !== remote => strictly behind: fast-forward is safe.
+      await git(["merge", "--ff-only", upstream]);
+      const newHead = await git(["rev-parse", "HEAD"]);
+      return text({ branch, upstream, result: "fast-forwarded", from: local, to: newHead });
+    } catch (error) {
+      return text(String(error.message || error), true);
+    }
+  },
+);
+
+server.registerTool(
+  "publish_handoff",
+  {
+    title: "Publish handoff (safe commit + branch)",
+    description:
+      "Validate one handoff, commit ONLY that handoff's directory onto a fresh branch bridge/<direction>/<id>, and push it. Never commits files outside the handoff dir. Never pushes to main. Never force-pushes. Returns branch, commit SHA, and committed files.",
+    annotations: { readOnlyHint: false, destructiveHint: false },
+    inputSchema: {
+      id: z.string().min(1).max(120),
+      message: z.string().min(1).max(500).optional(),
+      push: z.boolean().default(true),
+    },
+  },
+  async ({ id, message, push }) => {
+    try {
+      await assertGitRepo();
+      const { direction, path } = await findHandoff(id);
+      const scopeRel = relative(ROOT, path).split(sep).join("/");
+
+      // 1) Refuse if anything is ALREADY STAGED outside this handoff dir; a
+      //    scoped add ignores untracked files elsewhere, but a pre-staged file
+      //    would be swept into the commit.
+      const outside = await stagedOutsideScope(scopeRel);
+      if (outside.length > 0) {
+        return text({ error: "Refusing to publish: staged changes exist outside the handoff scope. Unstage them first.", scope: scopeRel, outside }, true);
+      }
+
+      // 2) Validate the handoff via bridge.py before committing.
+      const validation = await runBridge(["validate", scopeRel]);
+
+      // 3) Secret scan across the handoff's text files.
+      const scanRoot = path;
+      async function scan(dir) {
+        for (const entry of await readdir(dir, { withFileTypes: true })) {
+          const item = join(dir, entry.name);
+          if (entry.isDirectory()) { await scan(item); continue; }
+          if (!entry.isFile()) continue;
+          if (entry.name === ".gitkeep") continue;
+          let buf;
+          try { buf = await readFile(item, "utf8"); } catch { continue; }
+          if (buf.length <= MAX_TEXT_BYTES && hasLikelySecret(buf)) {
+            throw new Error(`Refusing to publish: '${relative(path, item)}' appears to contain a secret.`);
+          }
+        }
+      }
+      await scan(scanRoot);
+
+      // 4) Fresh branch bridge/<direction>/<id>. Never main. Refuse if it already exists.
+      const branch = `bridge/${direction}/${id}`;
+      if (/^(main|master)$/.test(branch)) return text("Refusing: computed branch resolves to a protected branch.", true);
+      const localExists = (await runGit(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`])).code === 0;
+      const remoteExists = (await runGit(["ls-remote", "--exit-code", "--heads", "origin", branch])).code === 0;
+      if (localExists || remoteExists) {
+        return text({ error: `Refusing to publish: branch '${branch}' already exists (${localExists ? "local" : ""}${localExists && remoteExists ? "+" : ""}${remoteExists ? "remote" : ""}). One handoff = one branch.`, branch }, true);
+      }
+
+      const startBranch = await currentBranch();
+      await git(["checkout", "-b", branch]);
+      try {
+        // 5) Stage ONLY the handoff dir (add-and-remove within scope).
+        await git(["add", "--all", "--", scopeRel]);
+        // Guard: staged set must be entirely within scope.
+        const staged = (await git(["diff", "--cached", "--name-only"])).split("\n").map((x) => x.trim()).filter(Boolean);
+        const prefix = scopeRel.endsWith("/") ? scopeRel : `${scopeRel}/`;
+        const strayStaged = staged.filter((f) => f !== scopeRel && !f.startsWith(prefix));
+        if (strayStaged.length > 0) {
+          await git(["reset", "-q"]);
+          await git(["checkout", startBranch]);
+          await runGit(["branch", "-D", branch]);
+          return text({ error: "Refusing to publish: staging escaped the handoff scope.", stray: strayStaged }, true);
+        }
+        if (staged.length === 0) {
+          await git(["checkout", startBranch]);
+          await runGit(["branch", "-D", branch]);
+          return text("Nothing to publish: no changes in the handoff directory.", true);
+        }
+
+        const commitMessage = message || `bridge(${direction}): publish handoff ${id}`;
+        await git(["commit", "-m", commitMessage]);
+        const sha = await git(["rev-parse", "HEAD"]);
+
+        let pushed = false;
+        if (push) {
+          // Never force. Set upstream on first push of this fresh branch.
+          await git(["push", "--set-upstream", "origin", branch]);
+          pushed = true;
+        }
+        return text({ handoff: id, direction, branch, commit: sha, files: staged, pushed, validation, message: commitMessage });
+      } catch (error) {
+        // Best-effort cleanup: return to the starting branch; keep the new branch for inspection.
+        await runGit(["checkout", startBranch]);
+        throw error;
+      }
     } catch (error) {
       return text(String(error.message || error), true);
     }

@@ -1,6 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,9 +10,26 @@ const testDir = dirname(fileURLToPath(import.meta.url));
 const root = resolve(testDir, "../..");
 const sandbox = await mkdtemp(resolve(tmpdir(), "codex-work-bridge-mcp-"));
 await cp(resolve(root, "bridge.py"), resolve(sandbox, "bridge.py"));
+await cp(resolve(root, ".gitignore"), resolve(sandbox, ".gitignore"));
 await writeFile(resolve(sandbox, "PROJECT_STATE.md"), "# Test state\n", "utf8");
 await mkdir(resolve(sandbox, "exchange/ide-to-work"), { recursive: true });
 await mkdir(resolve(sandbox, "exchange/work-to-ide"), { recursive: true });
+
+// --- git setup so publish_handoff / sync_handoffs can be exercised end-to-end ---
+const bareRemote = await mkdtemp(resolve(tmpdir(), "codex-work-bridge-remote-"));
+function gitIn(cwd, args) {
+  const r = spawnSync("git", args, { cwd, encoding: "utf8" });
+  if (r.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${r.stderr || r.stdout}`);
+  return (r.stdout || "").trim();
+}
+gitIn(bareRemote, ["init", "--bare", "-b", "main"]);
+gitIn(sandbox, ["init", "-b", "main"]);
+gitIn(sandbox, ["config", "user.name", "smoke"]);
+gitIn(sandbox, ["config", "user.email", "smoke@example.com"]);
+gitIn(sandbox, ["add", "."]);
+gitIn(sandbox, ["commit", "-m", "seed"]);
+gitIn(sandbox, ["remote", "add", "origin", bareRemote]);
+gitIn(sandbox, ["push", "--set-upstream", "origin", "main"]);
 
 const transport = new StdioClientTransport({
   command: process.execPath,
@@ -34,6 +52,8 @@ try {
     "update_handoff",
     "validate_bridge",
     "pack_handoff",
+    "sync_handoffs",
+    "publish_handoff",
   ];
   for (const name of expected) {
     if (!names.includes(name)) throw new Error(`Missing tool: ${name}`);
@@ -77,7 +97,38 @@ try {
     throw new Error("Written attachment content did not match");
   }
 
-  console.log(`MCP end-to-end smoke test passed: ${names.length} tools available; create, write, update, validate and pack succeeded.`);
+  // --- publish_handoff: validate + commit-onto-branch + push to bare remote ---
+  const published = await client.callTool({ name: "publish_handoff", arguments: { id: createdData.id } });
+  if (published.isError) throw new Error(`publish_handoff returned an error: ${published.content?.[0]?.text}`);
+  const pub = JSON.parse(published.content.find((b) => b.type === "text")?.text);
+  if (pub.branch !== `bridge/ide-to-work/${createdData.id}`) throw new Error(`Unexpected branch: ${pub.branch}`);
+  if (!pub.pushed || !pub.commit) throw new Error("publish_handoff did not push/commit");
+  if (pub.files.some((f) => !f.startsWith(`exchange/ide-to-work/${createdData.id}/`))) {
+    throw new Error("publish_handoff staged files outside the handoff scope");
+  }
+
+  // publishing the same handoff again must be refused (branch already exists)
+  const dup = await client.callTool({ name: "publish_handoff", arguments: { id: createdData.id } });
+  if (!dup.isError) throw new Error("publish_handoff should refuse an existing branch");
+
+  // --- sync_handoffs: on main (which has an upstream) it must fast-forward or be up-to-date ---
+  gitIn(sandbox, ["checkout", "main"]);
+  const synced = await client.callTool({ name: "sync_handoffs", arguments: {} });
+  if (synced.isError) throw new Error(`sync_handoffs returned an error: ${synced.content?.[0]?.text}`);
+  const sync = JSON.parse(synced.content.find((b) => b.type === "text")?.text);
+  if (!["already-up-to-date", "fast-forwarded"].includes(sync.result)) {
+    throw new Error(`Unexpected sync result: ${sync.result}`);
+  }
+
+  // --- sync_handoffs must refuse a dirty worktree ---
+  await writeFile(resolve(sandbox, "dirty.txt"), "uncommitted\n", "utf8");
+  const dirtySync = await client.callTool({ name: "sync_handoffs", arguments: {} });
+  if (!dirtySync.isError) throw new Error("sync_handoffs should refuse a dirty worktree");
+  await rm(resolve(sandbox, "dirty.txt"), { force: true });
+
+  await rm(bareRemote, { recursive: true, force: true });
+
+  console.log(`MCP end-to-end smoke test passed: ${names.length} tools available; create, write, update, validate, pack, publish and sync succeeded.`);
 } finally {
   await client.close();
   await rm(sandbox, { recursive: true, force: true });

@@ -17,11 +17,12 @@ Maintain a reliable file-based collaboration channel between Codex IDE and ChatG
   - `ide-to-work/20260710-163852-...` (Guitar Trainer report) — completed, Work returned architecture feedback.
 - `bridge.py validate` hardened: `files/` is now optional (git drops empty dirs) and validation cross-checks `manifest.files` ↔ real files/ (missing/extra both fail).
 - Response branches merged into `main` with `--no-ff`; only `main` remains.
+- MCP now has two safe git workflow tools: `sync_handoffs` (ff-only) and `publish_handoff` (scoped commit onto bridge/<direction>/<id>, never main, no force, secret-scanned). 10 tools total; smoke test covers publish/sync incl. dirty-worktree, existing-branch, scope-escape, secret and push-failure refusals.
 
 ## Known limitations
 
 - Exchange is asynchronous and manually triggered (no realtime). Each round needs: Codex push → tell Work to read → Work pushes response branch → tell Codex to fetch/merge.
-- No auto git tooling inside MCP (pull/commit/push/branch are done by the human/Codex on the machine).
+- Auto git is limited to two guarded workflow tools (sync_handoffs ff-only, publish_handoff scoped+branch-only). No arbitrary git tool; still no automatic trigger/polling.
 - No webhook, watcher, queue, dedupe, or automatic acknowledgement.
 - MCP tools operate on local files only; ChatGPT Work web cannot call the local MCP directly.
 
