@@ -5,3 +5,4 @@ __pycache__/
 .bridge/packages/*.zip
 node_modules/
 npm-debug.log*
+_chat_client.mjs
