@@ -126,9 +126,41 @@ def validate_handoff(path: Path) -> list[str]:
         errors.append(f"{path.relative_to(ROOT)}: id must match directory name")
     if not data.get("title"):
         errors.append(f"{path.relative_to(ROOT)}: title is required")
-    # If the manifest lists attachments, files/ must actually exist.
-    if data.get("files") and not files_dir.is_dir():
-        errors.append(f"{path.relative_to(ROOT)}: manifest lists files but files/ is missing")
+    errors.extend(_validate_files_manifest(path, data, files_dir))
+    return errors
+
+
+def _validate_files_manifest(path: Path, data: dict, files_dir: Path) -> list[str]:
+    """Cross-check manifest.files <-> the real files/ directory.
+
+    Manifest entries are stored relative to the handoff dir (e.g.
+    "files/foo.txt"). We require the two sides to agree so a missing or an
+    unlisted attachment cannot slip through validation.
+    """
+    errors: list[str] = []
+    listed = data.get("files")
+    if listed is None:
+        return errors
+    if not isinstance(listed, list):
+        return [f"{path.relative_to(ROOT)}: manifest files must be a list"]
+
+    if listed and not files_dir.is_dir():
+        return [f"{path.relative_to(ROOT)}: manifest lists files but files/ is missing"]
+
+    # Normalise the manifest side to paths relative to the handoff dir.
+    listed_set = {str(entry).strip().replace("\\", "/").lstrip("./") for entry in listed}
+
+    # Real files on disk, relative to the handoff dir (always "files/...").
+    actual_set = set()
+    if files_dir.is_dir():
+        for item in files_dir.rglob("*"):
+            if item.is_file() and item.name != ".gitkeep":
+                actual_set.add(item.relative_to(path).as_posix())
+
+    for missing in sorted(listed_set - actual_set):
+        errors.append(f"{path.relative_to(ROOT)}: manifest lists '{missing}' but it is not in files/")
+    for extra in sorted(actual_set - listed_set):
+        errors.append(f"{path.relative_to(ROOT)}: files/ has '{extra}' not listed in manifest")
     return errors
 
 

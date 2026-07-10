@@ -27,11 +27,18 @@ Mỗi handoff là một thư mục độc lập:
 
 ```text
 20260710-153000-fix-study-ui/
-  handoff.json
-  REQUEST.md
-  RESPONSE.md
-  files/
+  handoff.json         # trạng thái máy đọc (bắt buộc)
+  REQUEST.md           # nội dung yêu cầu (bắt buộc)
+  RESPONSE.md          # nội dung phản hồi (bắt buộc)
+  files/               # file đính kèm (TÙY CHỌN)
 ```
+
+`files/` là **tùy chọn**. Git không lưu thư mục rỗng, nên một handoff không có
+file đính kèm (`"files": []`) sẽ đến nơi mà không có thư mục `files/` sau khi
+clone — điều này hợp lệ. `bridge.py validate` chỉ bắt buộc `handoff.json`,
+`REQUEST.md`, `RESPONSE.md`; và đối chiếu hai chiều `manifest.files` ↔ file
+thật trong `files/` (thiếu hoặc thừa đều báo lỗi). `.gitkeep` được bỏ qua khi
+đối chiếu.
 
 ## Bắt đầu nhanh
 
@@ -47,7 +54,7 @@ python3 bridge.py validate
 Lệnh `new` in ra đường dẫn của handoff mới. Hãy:
 
 1. Viết yêu cầu vào `REQUEST.md`.
-2. Chép file cần gửi vào thư mục `files/`.
+2. (Tùy chọn) Chép file cần gửi vào thư mục `files/` và liệt kê chúng trong `handoff.json` (`update_handoff` tự đồng bộ danh sách này).
 3. Chạy `python3 bridge.py pack <đường-dẫn-handoff>`.
 4. Commit/push lên GitHub hoặc tải ZIP lên ChatGPT Work.
 
@@ -64,7 +71,7 @@ Sau khi Codex tạo xong:
 
 ## Luồng Work → Codex IDE
 
-Work tạo handoff trong `exchange/work-to-ide/`, ghi kết quả vào `RESPONSE.md` và đặt file trả về trong `files/`.
+Work tạo handoff trong `exchange/work-to-ide/`, ghi kết quả vào `RESPONSE.md` và (nếu có) đặt file trả về trong `files/`. Nếu phản hồi chỉ là văn bản, có thể bỏ qua `files/`.
 
 Nói với Codex IDE:
 
