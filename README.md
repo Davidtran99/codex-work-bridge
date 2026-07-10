@@ -101,4 +101,11 @@ MCP server có hai tool git cấp workflow để Codex IDE thao tác an toàn:
 - `publish_handoff` — validate rồi commit CHỈ thư mục của một handoff lên branch `bridge/<direction>/<id>` và push. Không đụng `main`, không force-push, quét secret trước khi commit, trả về branch + commit SHA + danh sách file.
 - `sync_handoffs` — fetch/prune và **chỉ fast-forward**; từ chối nếu worktree bẩn hoặc branch đã lệch (không merge/reset/force).
 
+Ngoài ra có một lớp **chat có thread, bất đồng bộ** để trao đổi hội thoại (không phải handoff công việc):
+
+- `chat_send` — gửi một tin nhắn lên branch `bridge/chat/<thread_id>`; mỗi tin là một file JSON riêng (id là khoá chống trùng). Commit chỉ thư mục thread, push, rồi quay lại base branch.
+- `chat_read` — fetch và đọc thread thẳng từ remote-tracking ref **không merge**; `since_id` để chỉ lấy tin mới (tránh xử lý trùng).
+
+ChatGPT Work trả lời trên cùng thread (thêm message JSON role=work). Vì Work Automation ở môi trường hiện tại chạy tối đa mỗi giờ, đây là **chat bất đồng bộ có thread** (trễ tới ~1 giờ theo lịch, hoặc trả lời ngay khi bạn nhắn Work xử lý inbox), chưa phải chat tức thời.
+
 Hai tool này chỉ giúp thao tác nhanh và an toàn hơn; chúng **không tạo realtime**. Vẫn cần một cơ chế (ví dụ Work Automation) định kỳ kiểm tra GitHub và trường `processed_by`/`processed_at` để chống xử lý trùng.

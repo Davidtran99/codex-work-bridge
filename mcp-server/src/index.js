@@ -127,6 +127,45 @@ function hasLikelySecret(content) {
   return patterns.some((pattern) => pattern.test(content));
 }
 
+// ---- Chat layer (threaded, async, over GitHub branches) --------------------
+// A chat thread lives on branch bridge/chat/<thread_id>. Each message is its
+// own JSON file under chat/<thread_id>/ so appends never collide and message
+// ids give natural dedupe. chat_read fetches and reads straight from the
+// remote-tracking ref WITHOUT merging into the working branch.
+const CHAT_DIR = "chat";
+const CHAT_ROLES = ["ide", "work"];
+const THREAD_ID_RE = /^[a-zA-Z0-9._-]{1,120}$/;
+
+function chatBranch(threadId) {
+  if (!THREAD_ID_RE.test(threadId)) throw new Error("Invalid thread_id");
+  return `bridge/chat/${threadId}`;
+}
+
+function newMessageId() {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+// List "<name> <sha>"-style entries of a directory in a remote ref, without checkout.
+async function readRemoteThreadMessages(threadId) {
+  const branch = chatBranch(threadId);
+  const ref = `origin/${branch}`;
+  const exists = (await runGit(["rev-parse", "--verify", "--quiet", ref])).code === 0;
+  if (!exists) return { branch, exists: false, messages: [] };
+  const dir = `${CHAT_DIR}/${threadId}`;
+  const tree = await runGit(["ls-tree", "--name-only", ref, `${dir}/`]);
+  if (tree.code !== 0) return { branch, exists: true, messages: [] };
+  const files = tree.stdout.split("\n").map((x) => x.trim()).filter((f) => f.endsWith(".json"));
+  files.sort();
+  const messages = [];
+  for (const file of files) {
+    const show = await runGit(["show", `${ref}:${file}`]);
+    if (show.code !== 0) continue;
+    try { messages.push(JSON.parse(show.stdout)); } catch { /* skip malformed */ }
+  }
+  messages.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)) || String(a.id).localeCompare(String(b.id)));
+  return { branch, exists: true, messages };
+}
+
 const server = new McpServer(
   { name: "codex-work-bridge", version: "1.0.0" },
   {
@@ -448,7 +487,10 @@ server.registerTool(
           if (entry.name === ".gitkeep") continue;
           let buf;
           try { buf = await readFile(item, "utf8"); } catch { continue; }
-          if (buf.length <= MAX_TEXT_BYTES && hasLikelySecret(buf)) {
+          // Scan large files too, but only their leading MAX_TEXT_BYTES so a big
+          // attachment cannot smuggle a secret past the check by being oversized.
+          const head = buf.length > MAX_TEXT_BYTES ? buf.slice(0, MAX_TEXT_BYTES) : buf;
+          if (hasLikelySecret(head)) {
             throw new Error(`Refusing to publish: '${relative(path, item)}' appears to contain a secret.`);
           }
         }
@@ -490,17 +532,129 @@ server.registerTool(
         const sha = await git(["rev-parse", "HEAD"]);
 
         let pushed = false;
+        let pushError = null;
         if (push) {
           // Never force. Set upstream on first push of this fresh branch.
-          await git(["push", "--set-upstream", "origin", branch]);
-          pushed = true;
+          const pr = await runGit(["push", "--set-upstream", "origin", branch]);
+          if (pr.code === 0) pushed = true;
+          else pushError = pr.stderr || pr.stdout || `git push exited ${pr.code}`;
         }
-        return text({ handoff: id, direction, branch, commit: sha, files: staged, pushed, validation, message: commitMessage });
+        // Always return the worktree to the base branch; the new branch keeps
+        // the commit so a failed push can be retried without losing work.
+        await git(["checkout", startBranch]);
+        const result = { handoff: id, direction, branch, base: startBranch, commit: sha, files: staged, pushed, validation, message: commitMessage };
+        if (pushError) { result.push_error = pushError; return text(result, true); }
+        return text(result);
       } catch (error) {
         // Best-effort cleanup: return to the starting branch; keep the new branch for inspection.
         await runGit(["checkout", startBranch]);
         throw error;
       }
+    } catch (error) {
+      return text(String(error.message || error), true);
+    }
+  },
+);
+
+server.registerTool(
+  "chat_send",
+  {
+    title: "Chat send (threaded, async over GitHub)",
+    description:
+      "Post a chat message from Codex IDE to ChatGPT Work on branch bridge/chat/<thread_id>. Each message is a separate JSON file (id = dedupe key). Fetches the thread branch first, fast-forwards a local copy, appends one message, commits ONLY the chat/<thread_id> dir, and pushes. Never touches main, never force-pushes. Returns thread_id, message id, branch and commit.",
+    annotations: { readOnlyHint: false, destructiveHint: false },
+    inputSchema: {
+      thread_id: z.string().min(1).max(120),
+      text: z.string().min(1).max(200000),
+      role: z.enum(CHAT_ROLES).default("ide"),
+      reply_to: z.string().max(120).optional(),
+    },
+  },
+  async ({ thread_id, text: body, role, reply_to }) => {
+    try {
+      await assertGitRepo();
+      if (hasLikelySecret(body)) return text("Refusing to send: message appears to contain a secret.", true);
+      const branch = chatBranch(thread_id);
+      const startBranch = await currentBranch();
+      if (await isWorktreeDirty()) return text("Refusing to send: commit or stash your changes first (worktree is dirty).", true);
+
+      await runGit(["fetch", "--prune", "origin"]);
+      const remoteRef = `origin/${branch}`;
+      const remoteExists = (await runGit(["rev-parse", "--verify", "--quiet", remoteRef])).code === 0;
+
+      // Prepare the thread branch locally without disturbing the base branch.
+      const localExists = (await runGit(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`])).code === 0;
+      if (remoteExists) {
+        // Point a clean local branch at the remote tip, then check it out.
+        await runGit(["branch", "-f", branch, remoteRef]);
+        await git(["checkout", branch]);
+      } else {
+        if (localExists) await runGit(["branch", "-D", branch]);
+        // New thread: branch off the current HEAD; we only ever commit chat files.
+        await git(["checkout", "-b", branch]);
+      }
+
+      try {
+        const id = newMessageId();
+        const now = new Date().toISOString();
+        const dirRel = `${CHAT_DIR}/${thread_id}`;
+        const fileRel = `${dirRel}/${now.replace(/[:.]/g, "-")}_${role}_${id}.json`;
+        const abs = assertInsideRoot(join(ROOT, fileRel));
+        await mkdir(dirname(abs), { recursive: true });
+        const message = { schema_version: 1, id, thread_id, role, reply_to: reply_to || null, created_at: now, text: body };
+        await writeFile(abs, `${JSON.stringify(message, null, 2)}\n`, "utf8");
+
+        await git(["add", "--", dirRel]);
+        const staged = (await git(["diff", "--cached", "--name-only"])).split("\n").map((x) => x.trim()).filter(Boolean);
+        const strayStaged = staged.filter((f) => !f.startsWith(`${dirRel}/`));
+        if (strayStaged.length > 0) {
+          await git(["reset", "-q"]);
+          await git(["checkout", startBranch]);
+          return text({ error: "Refusing to send: staging escaped the chat thread scope.", stray: strayStaged }, true);
+        }
+        await git(["commit", "-m", `chat(${role}): ${thread_id} ${id}`]);
+        const sha = await git(["rev-parse", "HEAD"]);
+        const pr = await runGit(["push", "--set-upstream", "origin", branch]);
+        await git(["checkout", startBranch]);
+        if (pr.code !== 0) return text({ thread_id, branch, id, commit: sha, pushed: false, push_error: pr.stderr || pr.stdout }, true);
+        return text({ thread_id, branch, id, role, reply_to: reply_to || null, commit: sha, pushed: true, file: fileRel });
+      } catch (error) {
+        await runGit(["checkout", startBranch]);
+        throw error;
+      }
+    } catch (error) {
+      return text(String(error.message || error), true);
+    }
+  },
+);
+
+server.registerTool(
+  "chat_read",
+  {
+    title: "Chat read (threaded, no merge)",
+    description:
+      "Fetch and read a chat thread from bridge/chat/<thread_id> straight off the remote-tracking ref WITHOUT merging into your working branch. Returns messages in order. Pass since_id to get only messages after a known id (dedupe / avoid re-processing). Read-only for the working tree.",
+    annotations: { readOnlyHint: true, destructiveHint: false },
+    inputSchema: {
+      thread_id: z.string().min(1).max(120),
+      since_id: z.string().max(120).optional(),
+      limit: z.number().int().min(1).max(200).default(50),
+    },
+  },
+  async ({ thread_id, since_id, limit }) => {
+    try {
+      await assertGitRepo();
+      await runGit(["fetch", "--prune", "origin"]);
+      const { branch, exists, messages } = await readRemoteThreadMessages(thread_id);
+      if (!exists) return text({ thread_id, branch, exists: false, messages: [], note: "No such thread yet. Use chat_send to start it." });
+      let out = messages;
+      if (since_id) {
+        const idx = messages.findIndex((m) => m.id === since_id);
+        out = idx >= 0 ? messages.slice(idx + 1) : messages;
+      }
+      const sliced = out.slice(-limit);
+      const last = messages.length ? messages[messages.length - 1] : null;
+      return text({ thread_id, branch, exists: true, count: sliced.length, total: messages.length, last_id: last ? last.id : null, messages: sliced });
     } catch (error) {
       return text(String(error.message || error), true);
     }

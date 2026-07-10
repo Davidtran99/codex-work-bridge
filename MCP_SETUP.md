@@ -1,6 +1,6 @@
 # Cài Codex ↔ Work Bridge vào MCP
 
-Tài liệu này hướng dẫn cài MCP server cục bộ vào Codex CLI, Codex IDE extension và ChatGPT desktop app. Server cung cấp 10 tool để đọc, tạo, cập nhật, kiểm tra, đóng gói và đồng bộ/xuất bản handoff qua git.
+Tài liệu này hướng dẫn cài MCP server cục bộ vào Codex CLI, Codex IDE extension và ChatGPT desktop app. Server cung cấp 12 tool: đọc/tạo/cập nhật/kiểm tra/đóng gói handoff, đồng bộ + xuất bản qua git, và CHAT có thread (bất đồng bộ) giữa Codex IDE và ChatGPT Work.
 
 ## 1. Hiểu đúng mô hình kết nối
 
@@ -81,7 +81,7 @@ Sau đó khởi động lại Codex IDE extension. Mở task mới và nhập:
 /mcp
 ```
 
-Bạn phải thấy server `codex-work-bridge` cùng 10 tool.
+Bạn phải thấy server `codex-work-bridge` cùng 12 tool.
 
 ## 5. Cài thủ công bằng CLI
 
@@ -180,7 +180,9 @@ Bạn cũng có thể đặt cấu hình vào `.codex/config.toml` của reposit
 | `validate_bridge` | Đọc | Kiểm tra cấu trúc handoff |
 | `pack_handoff` | Ghi | Tạo ZIP trong `.bridge/packages/` |
 | `sync_handoffs` | Git (an toàn) | Fetch/prune + fast-forward CHỈ; từ chối nếu worktree bẩn hoặc branch lệch. Không merge/reset/force |
-| `publish_handoff` | Git (an toàn) | Validate → commit CHỈ thư mục handoff lên branch `bridge/<direction>/<id>` → push. Không đụng main, không force-push, quét secret |
+| `publish_handoff` | Git (an toàn) | Validate → commit CHỈ thư mục handoff lên branch `bridge/<direction>/<id>` → push, rồi quay lại base branch. Không đụng main, không force-push, quét secret |
+| `chat_send` | Chat/Git | Gửi 1 tin nhắn lên thread `bridge/chat/<thread_id>` (mỗi tin = 1 file JSON, id chống trùng). Commit chỉ thư mục thread, push, quay lại base. Quét secret |
+| `chat_read` | Chat (đọc) | Fetch + đọc thread thẳng từ remote-tracking ref, KHÔNG merge. `since_id` để chỉ lấy tin mới (dedupe) |
 
 Server chặn đường dẫn thoát ra ngoài project, giới hạn file văn bản ở 1 MiB và từ chối một số mẫu secret phổ biến. Hai tool git (`sync_handoffs`, `publish_handoff`) là workflow cấp cao có bảo vệ: chỉ fast-forward khi sync; khi publish chỉ commit đúng thư mục handoff, luôn tạo branch riêng `bridge/<direction>/<id>` (một handoff = một branch), không bao giờ push thẳng `main` và không force-push.
 
@@ -218,7 +220,7 @@ npm run mcp:smoke
 Kết quả đúng:
 
 ```text
-MCP smoke test passed: 10 tools; create, write, update, validate, pack, publish and sync succeeded.
+MCP smoke test passed: 12 tools; create, write, update, validate, pack, publish, sync and threaded chat succeeded.
 ```
 
 Bạn cũng có thể dùng MCP Inspector:

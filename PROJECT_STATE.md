@@ -17,7 +17,7 @@ Maintain a reliable file-based collaboration channel between Codex IDE and ChatG
   - `ide-to-work/20260710-163852-...` (Guitar Trainer report) — completed, Work returned architecture feedback.
 - `bridge.py validate` hardened: `files/` is now optional (git drops empty dirs) and validation cross-checks `manifest.files` ↔ real files/ (missing/extra both fail).
 - Response branches merged into `main` with `--no-ff`; only `main` remains.
-- MCP now has two safe git workflow tools: `sync_handoffs` (ff-only) and `publish_handoff` (scoped commit onto bridge/<direction>/<id>, never main, no force, secret-scanned). 10 tools total; smoke test covers publish/sync incl. dirty-worktree, existing-branch, scope-escape, secret and push-failure refusals.
+- MCP now has safe git workflow tools + a threaded async chat layer: `sync_handoffs` (ff-only), `publish_handoff` (scoped commit onto bridge/<direction>/<id>, never main, no force, secret-scanned, returns to base branch), `chat_send`/`chat_read` (thread on bridge/chat/<thread_id>, per-message JSON with dedupe id, read straight off remote ref without merging). 12 tools total; smoke test covers publish/sync/chat incl. dirty-worktree, existing-branch, scope-escape, secret, push-failure and since_id-dedupe.
 
 ## Known limitations
 

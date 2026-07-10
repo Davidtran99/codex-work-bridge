@@ -54,6 +54,8 @@ try {
     "pack_handoff",
     "sync_handoffs",
     "publish_handoff",
+    "chat_send",
+    "chat_read",
   ];
   for (const name of expected) {
     if (!names.includes(name)) throw new Error(`Missing tool: ${name}`);
@@ -126,9 +128,47 @@ try {
   if (!dirtySync.isError) throw new Error("sync_handoffs should refuse a dirty worktree");
   await rm(resolve(sandbox, "dirty.txt"), { force: true });
 
+  // --- chat_send / chat_read: threaded async round-trip over the bare remote ---
+  gitIn(sandbox, ["checkout", "main"]);
+  const thread = "smoke-thread";
+
+  // reading a non-existent thread is not an error
+  const empty = await client.callTool({ name: "chat_read", arguments: { thread_id: thread } });
+  if (empty.isError) throw new Error(`chat_read (empty) errored: ${empty.content?.[0]?.text}`);
+  if (JSON.parse(empty.content[0].text).exists !== false) throw new Error("empty thread should report exists=false");
+
+  const s1 = await client.callTool({ name: "chat_send", arguments: { thread_id: thread, text: "hello from ide", role: "ide" } });
+  if (s1.isError) throw new Error(`chat_send #1 errored: ${s1.content?.[0]?.text}`);
+  const m1 = JSON.parse(s1.content[0].text);
+  if (m1.branch !== `bridge/chat/${thread}` || !m1.pushed) throw new Error("chat_send #1 did not push to the thread branch");
+
+  // must return to main after sending
+  const cur = gitIn(sandbox, ["rev-parse", "--abbrev-ref", "HEAD"]);
+  if (cur !== "main") throw new Error(`chat_send left us on ${cur}, expected main`);
+
+  const s2 = await client.callTool({ name: "chat_send", arguments: { thread_id: thread, text: "second message", role: "ide", reply_to: m1.id } });
+  if (s2.isError) throw new Error(`chat_send #2 errored: ${s2.content?.[0]?.text}`);
+  const m2 = JSON.parse(s2.content[0].text);
+
+  const readAll = await client.callTool({ name: "chat_read", arguments: { thread_id: thread } });
+  const all = JSON.parse(readAll.content[0].text);
+  if (all.total !== 2) throw new Error(`expected 2 messages, got ${all.total}`);
+  if (all.messages[0].text !== "hello from ide" || all.messages[1].reply_to !== m1.id) {
+    throw new Error("chat_read returned unexpected message ordering/content");
+  }
+
+  // since_id must return only newer messages (dedupe)
+  const readSince = await client.callTool({ name: "chat_read", arguments: { thread_id: thread, since_id: m1.id } });
+  const since = JSON.parse(readSince.content[0].text);
+  if (since.count !== 1 || since.messages[0].id !== m2.id) throw new Error("since_id dedupe failed");
+
+  // secret guard on chat
+  const leak = await client.callTool({ name: "chat_send", arguments: { thread_id: thread, text: "token sk-abcdefghijklmnopqrstuvwxyz012345", role: "ide" } });
+  if (!leak.isError) throw new Error("chat_send should refuse a message containing a secret");
+
   await rm(bareRemote, { recursive: true, force: true });
 
-  console.log(`MCP end-to-end smoke test passed: ${names.length} tools available; create, write, update, validate, pack, publish and sync succeeded.`);
+  console.log(`MCP end-to-end smoke test passed: ${names.length} tools available; create, write, update, validate, pack, publish, sync and threaded chat succeeded.`);
 } finally {
   await client.close();
   await rm(sandbox, { recursive: true, force: true });
