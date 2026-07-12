@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "id": "20260712-codex-agent-pack-work-adaptation",
+  "direction": "work-to-ide",
+  "title": "ChatGPT Work adaptation: 29 validated skills",
+  "status": "completed",
+  "created_at": "2026-07-12T00:00:00+07:00",
+  "updated_at": "2026-07-12T00:00:00+07:00",
+  "parent_handoff": "20260711-211404-codex-agent-pack-24-skills-4-personas-10-rules",
+  "files": [
+    "shared/codex-agent-pack-work.zip.b64"
+  ]
+}
