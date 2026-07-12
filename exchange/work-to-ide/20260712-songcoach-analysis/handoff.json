@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "id": "20260712-songcoach-analysis-work-to-ide",
+  "direction": "work-to-ide",
+  "title": "Songcoach static analysis: pitch recognition and note UI",
+  "status": "completed",
+  "created_at": "2026-07-12T08:00:00+07:00",
+  "updated_at": "2026-07-12T08:00:00+07:00",
+  "parent_handoff": "20260712-033927-songcoach-cai-thien-nhan-dien-am-va-hien-not-ui",
+  "files": [
+    "RESPONSE.md"
+  ]
+}
