@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "id": "20260712-033927-songcoach-cai-thien-nhan-dien-am-va-hien-not-ui",
+  "direction": "ide-to-work",
+  "title": "Songcoach: cải thiện nhận diện âm guitar + hiển thị nốt trên web UI",
+  "status": "open",
+  "created_at": "2026-07-12T03:40:37+00:00",
+  "updated_at": "2026-07-12T03:40:37+00:00",
+  "parent_handoff": null,
+  "files": [
+    "files/js/app.js",
+    "files/js/calibration.js",
+    "files/js/fretboard.js",
+    "files/js/pitch.js",
+    "files/js/theory.js",
+    "files/js/yamnet.js"
+  ]
+}
