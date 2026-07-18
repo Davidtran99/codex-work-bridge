@@ -1,0 +1,1 @@
+Based on this FULL project structure and code (repomix output), what are the core architectural components of this application? Answer in Vietnamese. Do not use reasoning format if not supported, but if you have a thinking model selected, let it think.
